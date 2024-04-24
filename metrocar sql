@@ -1,0 +1,329 @@
+-- Define a Common Table Expression (CTE) to identify app downloads
+with app_downloaded as (
+  select
+    app_download_key
+  from app_downloads
+),
+
+-- Define a CTE to identify unique user sign-ups from downloaded apps
+sign_ups as (
+  select
+    distinct user_id
+  from signups su
+  inner join app_downloaded ad on su.session_id = ad.app_download_key
+  where su.signup_ts IS NOT NULL
+),
+
+-- Define a CTE to identify users who have requested a ride
+ride_requested as (
+  select
+    distinct rr.user_id
+  from sign_ups su
+  inner join ride_requests rr on rr.user_id = su.user_id
+),
+
+-- Define a CTE to identify users whose ride requests have been accepted
+Ride_accepted as (
+  SELECT distinct rr.user_id
+  from sign_ups su
+  inner join ride_requests rr on rr.user_id = su.user_id
+  WHERE rr.accept_ts IS NOT NULL
+),
+
+-- Define a CTE to identify users whose rides have been completed (not canceled)
+Ride_completed as (
+  SELECT distinct rr.user_id
+  from sign_ups su
+  inner join ride_requests rr on rr.user_id = su.user_id
+  WHERE rr.cancel_ts IS NULL
+),
+
+-- Define a CTE to identify users with successful transactions (approved charges)
+successful_transactions as (
+  select
+    DISTINCT user_id
+  from ride_requests rr
+  inner join transactions tr on rr.ride_id = tr.ride_id
+  where charge_status = 'Approved'
+),
+
+-- Define a CTE to identify users who have submitted reviews for rides
+reviews_s as (
+  select distinct rv.user_id
+  from reviews rv
+  inner join ride_requests rr on rv.ride_id = rr.ride_id
+),
+
+-- Define a CTE to represent each funnel step with its corresponding count
+steps as (
+  select 0 as funnel_step, 'app_downloaded' as funnel_name, COUNT(*) from app_downloaded 
+  union 
+  select 1 as funnel_step, 'sign_ups' as funnel_name, COUNT(*) from sign_ups 
+  union
+  select 2 as funnel_step, 'ride_requested' as funnel_name, COUNT(*) from ride_requested
+  union
+  select 3 as funnel_step, 'Ride_accepted' as funnel_name, COUNT(*) from Ride_accepted 
+  union
+  select 4 as funnel_step, 'Ride_completed' as funnel_name, COUNT(*) from Ride_completed
+  union
+  select 5 as funnel_step, 'successful_transactions' as funnel_name, COUNT(*) from successful_transactions
+  union
+  select 6 as funnel_step, 'reviews_s' as funnel_name, COUNT(*) from reviews_s  
+)
+
+-- Select and present the results with additional analysis on drop-off rates
+select
+  funnel_step, funnel_name,
+  count, 
+  lag(count) over (order by funnel_step),
+  round((1.0 - count::numeric/lag(count) over (order by funnel_step)), 2) as drop_off
+from steps
+order by funnel_step;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Create a Common Table Expression (CTE) to modify ride request data by extracting latitude and longitude from location strings
+WITH modified_ride_requests AS (
+    SELECT *,
+        -- Extract latitude from pickup_location
+        CASE
+            WHEN POSITION(' ' IN pickup_location) > 0 THEN
+                LEFT(pickup_location, POSITION(' ' IN pickup_location) - 1)::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS pickup_lat,
+        -- Extract longitude from pickup_location
+        CASE
+            WHEN POSITION(' ' IN pickup_location) > 0 THEN
+                RIGHT(pickup_location, LENGTH(pickup_location) - POSITION(' ' IN pickup_location))::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS pickup_lon,
+        -- Extract latitude from dropoff_location
+        CASE
+            WHEN POSITION(' ' IN dropoff_location) > 0 THEN
+                LEFT(dropoff_location, POSITION(' ' IN dropoff_location) - 1)::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS dropoff_lat,
+        -- Extract longitude from dropoff_location
+        CASE
+            WHEN POSITION(' ' IN dropoff_location) > 0 THEN
+                RIGHT(dropoff_location, LENGTH(dropoff_location) - POSITION(' ' IN dropoff_location))::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS dropoff_lon
+    FROM ride_requests
+),
+
+-- Create a CTE to calculate Manhattan distance based on extracted latitude and longitude
+manhattan_distance_table AS (
+    SELECT *,
+        abs((dropoff_lat - pickup_lat) * 111) + abs((dropoff_lon - pickup_lon) * 111) AS manhattan_distance
+    FROM modified_ride_requests
+),
+
+-- Create a CTE to combine all relevant data, including cancellation status and waiting time
+all_data as (
+    SELECT *,
+        -- Determine cancellation status
+        CASE 
+            WHEN (cancel_ts IS NOT NULL AND accept_ts IS NULL) THEN 'cancelled_without_accept' 
+            WHEN (accept_ts IS NOT NULL AND cancel_ts IS NOT NULL) THEN 'cancelled_after_accept'
+            ELSE 'completed' 
+        END AS cancellation,
+        -- Calculate waiting time in minutes
+        EXTRACT(EPOCH FROM (
+            CASE
+                WHEN (cancel_ts IS NOT NULL AND accept_ts IS NULL) THEN cancel_ts
+                WHEN (cancel_ts IS NOT NULL AND accept_ts IS NOT NULL) THEN accept_ts
+                ELSE accept_ts
+            END - request_ts
+        ) / 60.0) AS waiting_time_minutes
+    FROM manhattan_distance_table mdt
+)
+
+-- Select cancellation status and average waiting time, grouped by cancellation status
+SELECT cancellation, AVG(waiting_time_minutes)
+FROM all_data
+GROUP BY cancellation;
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Create a Common Table Expression (CTE) to modify ride request data by extracting latitude and longitude from location strings
+WITH modified_ride_requests AS (
+    SELECT *,
+        -- Extract latitude from pickup_location
+        CASE
+            WHEN POSITION(' ' IN pickup_location) > 0 THEN
+                LEFT(pickup_location, POSITION(' ' IN pickup_location) - 1)::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS pickup_lat,
+        -- Extract longitude from pickup_location
+        CASE
+            WHEN POSITION(' ' IN pickup_location) > 0 THEN
+                RIGHT(pickup_location, LENGTH(pickup_location) - POSITION(' ' IN pickup_location))::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS pickup_lon,
+        -- Extract latitude from dropoff_location
+        CASE
+            WHEN POSITION(' ' IN dropoff_location) > 0 THEN
+                LEFT(dropoff_location, POSITION(' ' IN dropoff_location) - 1)::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS dropoff_lat,
+        -- Extract longitude from dropoff_location
+        CASE
+            WHEN POSITION(' ' IN dropoff_location) > 0 THEN
+                RIGHT(dropoff_location, LENGTH(dropoff_location) - POSITION(' ' IN dropoff_location))::NUMERIC
+            ELSE NULL::NUMERIC
+        END AS dropoff_lon
+    FROM ride_requests
+),
+
+-- Create a CTE to calculate Manhattan distance based on extracted latitude and longitude
+manhattan_distance_table AS (
+    SELECT *,
+        abs((dropoff_lat - pickup_lat) * 111) + abs((dropoff_lon - pickup_lon) * 111) AS manhattan_distance
+    FROM modified_ride_requests
+),
+
+-- Create a CTE to combine all relevant data, including cancellation status and waiting time
+all_data as (
+    SELECT *,
+        -- Determine cancellation status
+        CASE 
+            WHEN (cancel_ts IS NOT NULL AND accept_ts IS NULL) THEN 'cancelled_without_accept' 
+            WHEN (accept_ts IS NOT NULL AND cancel_ts IS NOT NULL) THEN 'cancelled_after_accept'
+            ELSE 'completed' 
+        END AS cancellation,
+        -- Calculate waiting time in minutes
+        EXTRACT(EPOCH FROM (
+            CASE
+                WHEN (cancel_ts IS NOT NULL AND accept_ts IS NULL) THEN cancel_ts
+                WHEN (cancel_ts IS NOT NULL AND accept_ts IS NOT NULL) THEN accept_ts
+                ELSE accept_ts
+            END - request_ts
+        ) / 60.0) AS waiting_time_minutes
+    FROM manhattan_distance_table mdt
+)
+
+-- Select cancellation status and average waiting time, grouped by cancellation status
+SELECT cancellation, AVG(waiting_time_minutes)
+FROM all_data
+GROUP BY cancellation;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Create a Common Table Expression (CTE) to calculate various metrics at different funnel steps
+WITH totals AS (
+    SELECT
+        ad.platform, 
+        (CASE WHEN s.age_range IS NULL OR s.age_range = 'Unknown' THEN 'Unknown' ELSE s.age_range END) AS age_ranges,
+        ad.download_ts::date AS download_date,
+        COUNT(DISTINCT s.user_id) AS total_users_signed_up,
+        COUNT(DISTINCT rr.user_id) AS total_users_ride_requested,
+        COUNT(DISTINCT ad.app_download_key) AS total_downloads,
+        COUNT(DISTINCT CASE WHEN rr.accept_ts IS NOT NULL THEN rr.user_id END) AS total_users_ride_accepted,
+        COUNT(DISTINCT CASE WHEN rr.cancel_ts IS NULL THEN rr.user_id END) AS total_users_ride_completed,
+        COUNT(DISTINCT CASE WHEN tr.charge_status='Approved' THEN rr.user_id END) AS total_users_ride_paid,
+        COUNT(DISTINCT rv.user_id) AS total_users_with_review, 
+        COUNT(rr.ride_id) AS ride_count
+    FROM app_downloads ad
+    LEFT JOIN signups s ON ad.app_download_key = s.session_id
+    FULL JOIN ride_requests rr ON s.user_id = rr.user_id
+    LEFT JOIN transactions tr ON tr.ride_id = rr.ride_id
+    LEFT JOIN reviews rv ON rv.ride_id = rr.ride_id
+    GROUP BY ad.platform, age_ranges, download_date
+),
+
+-- Create a CTE to represent each funnel step with its corresponding metrics
+steps AS (
+    SELECT
+        0 AS funnel_step,
+        'download' AS funnel_name,
+        total_downloads AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+
+    UNION
+
+    SELECT
+        1 AS funnel_step,
+        'signups' AS funnel_name,
+        total_users_signed_up AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+
+    UNION
+
+    SELECT
+        2 AS funnel_step,
+        'ride_requested' AS funnel_name,
+        total_users_ride_requested AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+
+    UNION
+
+    SELECT
+        3 AS funnel_step,
+        'ride_accepted' AS funnel_name,
+        total_users_ride_accepted AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+
+    UNION
+
+    SELECT
+        4 AS funnel_step,
+        'ride_completed' AS funnel_name,
+        total_users_ride_completed AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+
+    UNION
+
+    SELECT
+        5 AS funnel_step,
+        'payment' AS funnel_name,
+        total_users_ride_paid AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+
+    UNION
+
+    SELECT
+        6 AS funnel_step,
+        'Review' AS funnel_name,
+        total_users_with_review AS user_count, platform AS platform, age_ranges, download_date, ride_count
+    FROM totals
+    ORDER BY funnel_step
+)
+
+-- Select and present the results with metrics for each funnel step
+SELECT funnel_step, funnel_name, platform, age_ranges, download_date, user_count, ride_count
+FROM steps 
+ORDER BY funnel_step, platform, age_ranges, download_date;
